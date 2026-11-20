@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- viewport-fit=cover lets the page use the full screen on phones with notches;
+       the safe-area padding below keeps content clear of them -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Snake Game | DevinLeeTech</title>
+  <style>
+    /* ===== Color palette (change the look of the whole game here) ===== */
+    :root {
+      --page-bg:       #040905;  /* page background (near-black green) */
+      --board-dark:    #0c2812;  /* checkerboard square 1 */
+      --board-light:   #0f3217;  /* checkerboard square 2 */
+      --neon-green:    #39ff14;  /* snake body, HUD text, board border */
+      --neon-green-hi: #b8ff9f;  /* snake head */
+      --neon-red:      #ff3b5c;  /* food and game over */
+      --gold:          #ffd84a;  /* new high score celebration */
+      --text-dim:      #5fbf6e;  /* secondary text */
+
+      /* Space taken by everything that isn't the board (buttons, score bar, hint,
+         padding, and phone notch/home-bar areas). Subtracted from the screen height
+         so the board always fits without scrolling. */
+      --chrome: calc(180px + env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px));
+
+      /* Board size: as large as fits the screen, always square. */
+      --board-size: min(94vw, calc(100vh - var(--chrome)));
+    }
+    /* Newer browsers: "dvh" accounts for mobile browser toolbars showing/hiding */
+    @supports (height: 100dvh) {
+      :root { --board-size: min(94vw, calc(100dvh - var(--chrome))); }
+    }
+
+    /* ===== Page layout: everything centered on a dark background ===== */
+    * { box-sizing: border-box; }
+
+    html {
+      overscroll-behavior: none;  /* no pull-to-refresh / bounce while swiping the snake */
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      /* Keep content out of phone notches and home-indicator areas */
+      padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+               env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+      background: radial-gradient(circle at center, #0a1d0e 0%, var(--page-bg) 70%);
+      font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Courier New", monospace;
+      color: var(--neon-green);
+      touch-action: none;       /* swipes control the snake instead of scrolling/zooming the page */
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent; /* no gray flash when tapping on mobile */
+    }
+    @supports (height: 100dvh) {
+      body { min-height: 100dvh; }
+    }
+
+    .game {
+      width: var(--board-size);
+    }
+
+    /* ===== Top buttons + score bar (grouped so they can sit beside the board in landscape) ===== */
+    .panel {
+      margin-bottom: 10px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    /* Buttons / links: at least 44px tall, the recommended minimum for finger taps */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 14px;
+      font: inherit;
+      font-size: clamp(12px, 2.6vmin, 15px);
+      font-weight: bold;
+      letter-spacing: 0.08em;
+      text-decoration: none;
+      color: var(--neon-green);
+      background: rgba(57, 255, 20, 0.06);
+      border: 2px solid var(--neon-green);
+      border-radius: 6px;
+      box-shadow: 0 0 10px rgba(57, 255, 20, 0.25);
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+
+    .btn:hover,
+    .btn:focus-visible {
+      background: var(--neon-green);
+      color: var(--page-bg);
+      outline: none;
+    }
+
+    /* ===== Score bar ===== */
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      font-size: clamp(14px, 3.2vmin, 22px);
+      font-weight: bold;
+      letter-spacing: 0.12em;
+      text-shadow: 0 0 8px rgba(57, 255, 20, 0.6);
+    }
+
+    .hud span {
+      color: #fff;
+      text-shadow: 0 0 8px rgba(57, 255, 20, 0.8);
+    }
+
+    /* BEST number briefly glows gold and grows when a new high score is set */
+    .hud span.pulse {
+      animation: best-pulse 0.9s ease-out;
+    }
+
+    @keyframes best-pulse {
+      0%   { transform: scale(1); }
+      30%  { transform: scale(1.5); color: var(--gold); text-shadow: 0 0 14px var(--gold); }
+      100% { transform: scale(1); }
+    }
+
+    /* The HUD number needs to be able to scale */
+    #high-score { display: inline-block; }
+
+    /* ===== Board wrapper: holds the board, the start/game over overlay, and scanlines ===== */
+    .board-wrap {
+      position: relative;
+      width: var(--board-size);
+      height: var(--board-size);
+    }
+
+    /* Faint horizontal lines over the whole board for a retro CRT look.
+       pointer-events: none so it never blocks taps or clicks. */
+    .board-wrap::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0,
+        rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.14) 3px
+      );
+    }
+
+    /* ===== The playing field: a square 21x21 grid with a checkerboard pattern =====
+       The 21 must match GRID_SIZE in grid.js. */
+    #game-board {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-rows: repeat(21, 1fr);
+      grid-template-columns: repeat(21, 1fr);
+      overflow: hidden;
+      border: 3px solid var(--neon-green);
+      border-radius: 6px;
+      box-shadow: 0 0 22px rgba(57, 255, 20, 0.35), inset 0 0 30px rgba(0, 0, 0, 0.5);
+
+      /* Checkerboard: a 2x2-cell tile (two cells wide, two tall) repeated across the board */
+      background-color: var(--board-dark);
+      background-image: conic-gradient(
+        var(--board-dark) 25%,
+        var(--board-light) 0 50%,
+        var(--board-dark) 0 75%,
+        var(--board-light) 0
+      );
+      background-size: calc(100% * 2 / 21) calc(100% * 2 / 21);
+    }
+
+    /* ===== Snake segments (created in snake.js) ===== */
+    .snake {
+      background-color: var(--neon-green);
+      border: max(1px, 0.25vmin) solid rgba(0, 0, 0, 0.55); /* thin gap between segments */
+      border-radius: 25%;
+      box-shadow: 0 0 8px rgba(57, 255, 20, 0.7);
+    }
+
+    /* The head is brighter so you can tell which end is which */
+    .snake.head {
+      background-color: var(--neon-green-hi);
+      border-radius: 35%;
+      box-shadow: 0 0 12px rgba(184, 255, 159, 0.9);
+    }
+
+    /* ===== Food (created in food.js): a glowing red dot ===== */
+    .food {
+      background-color: var(--neon-red);
+      border: max(1px, 0.25vmin) solid rgba(0, 0, 0, 0.4);
+      border-radius: 50%;
+      box-shadow: 0 0 12px rgba(255, 59, 92, 0.9);
+    }
+
+    /* ===== Game over: board turns red and shakes briefly (class added in game.js) ===== */
+    #game-board.game-over {
+      border-color: var(--neon-red);
+      box-shadow: 0 0 26px rgba(255, 59, 92, 0.55), inset 0 0 30px rgba(0, 0, 0, 0.5);
+      animation: shake 0.35s;
+    }
+
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      20%      { transform: translateX(-6px); }
+      40%      { transform: translateX(6px); }
+      60%      { transform: translateX(-4px); }
+      80%      { transform: translateX(4px); }
+    }
+
+    /* ===== New high score celebration: a gold flash with a "NEW BEST!" banner =====
+       Sits over the board but ignores taps so the game can still be controlled. */
+    .celebration {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      pointer-events: none;
+      opacity: 0;
+      border-radius: 6px;
+      background: radial-gradient(circle, rgba(255, 216, 74, 0.45) 0%, rgba(255, 216, 74, 0) 70%);
+      color: var(--gold);
+      font-size: clamp(26px, 8vmin, 56px);
+      font-weight: bold;
+      letter-spacing: 0.15em;
+      text-shadow: 0 0 16px var(--gold), 0 0 32px rgba(255, 216, 74, 0.7);
+    }
+
+    .celebration.active {
+      animation: celebrate 1.6s ease-out;
+    }
+
+    @keyframes celebrate {
+      0%   { opacity: 0; transform: scale(0.7); }
+      15%  { opacity: 1; transform: scale(1.08); }
+      30%  { opacity: 1; transform: scale(1); }
+      70%  { opacity: 1; }
+      100% { opacity: 0; transform: scale(1); }
+    }
+
+    /* ===== Start / game over screen shown on top of the board ===== */
+    .overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 0.9em;
+      padding: 1em;
+      text-align: center;
+      background: rgba(3, 10, 5, 0.8);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    /* "display: flex" above would override the hidden attribute, so re-hide it explicitly */
+    .overlay[hidden] { display: none; }
+
+    .overlay h1 {
+      margin: 0;
+      font-size: clamp(28px, 9vmin, 64px);
+      letter-spacing: 0.18em;
+      text-shadow: 0 0 14px rgba(57, 255, 20, 0.9);
+    }
+
+    .overlay p {
+      margin: 0;
+      font-size: clamp(12px, 2.8vmin, 18px);
+      letter-spacing: 0.08em;
+    }
+
+    #overlay-detail { color: var(--text-dim); }
+
+    /* Blinking "press to start" prompt */
+    #overlay-prompt {
+      color: #fff;
+      font-weight: bold;
+      animation: blink 1.1s steps(2, start) infinite;
+    }
+
+    @keyframes blink {
+      to { visibility: hidden; }
+    }
+
+    /* Game over title is red */
+    .overlay.over h1 {
+      color: var(--neon-red);
+      text-shadow: 0 0 14px rgba(255, 59, 92, 0.9);
+    }
+
+    /* ===== Controls hint below the board ===== */
+    .hint {
+      margin: 12px 0 0;
+      text-align: center;
+      font-size: clamp(11px, 2.2vmin, 14px);
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+    }
+
+    /* Show keyboard text on computers, swipe text on touch screens */
+    .hint-touch { display: none; }
+    @media (pointer: coarse) {
+      .hint-keys  { display: none; }
+      .hint-touch { display: inline; }
+    }
+
+    /* ===== Phones held sideways (landscape) =====
+       There isn't enough height for stacked layout, so the buttons and score
+       move into a column beside the board instead. */
+    @media (orientation: landscape) and (max-height: 520px) {
+      :root {
+        --board-size: min(calc(100vh - 24px), calc(100vw - 220px));
+      }
+      @supports (height: 100dvh) {
+        :root { --board-size: min(calc(100dvh - 24px), calc(100vw - 220px)); }
+      }
+
+      .game {
+        width: auto;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .panel {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        width: 170px;
+        margin: 0;
+      }
+
+      .topbar {
+        flex-direction: column;
+        margin: 0;
+      }
+
+      .hud {
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .hint { display: none; }
+    }
+
+    /* Respect users who have asked their system to reduce motion */
+    @media (prefers-reduced-motion: reduce) {
+      #game-board.game-over,
+      #overlay-prompt,
+      .hud span.pulse { animation: none; }
+
+      /* Still show the celebration, but as a simple fade with no movement */
+      .celebration.active { animation: celebrate-fade 1.6s ease-out; }
+      @keyframes celebrate-fade {
+        0%   { opacity: 0; }
+        15%  { opacity: 1; }
+        70%  { opacity: 1; }
+        100% { opacity: 0; }
+      }
+    }
+  </style>
+  <!-- type="module" lets game.js use import/export; defer waits for the page to load first -->
+  <script src="game.js" defer type="module"></script>
+<!-- SEO:START (written by tools/update-seo.py - do not edit by hand; change the PAGES table in that script instead) -->
+<meta name="description" content="Play the classic Snake game in your browser with arrow keys, WASD, or swipe controls. Eat the food, grow longer, and avoid the walls.">
+<link rel="canonical" href="https://devinleetech.com/games/snake/">
+<meta property="og:site_name" content="DevinLeeTech">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Snake Game | DevinLeeTech">
+<meta property="og:description" content="Play the classic Snake game in your browser with arrow keys, WASD, or swipe controls. Eat the food, grow longer, and avoid the walls.">
+<meta property="og:url" content="https://devinleetech.com/games/snake/">
+<meta property="og:image" content="https://devinleetech.com/images/social/games-snake.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Snake Game">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Snake Game | DevinLeeTech">
+<meta name="twitter:description" content="Play the classic Snake game in your browser with arrow keys, WASD, or swipe controls. Eat the food, grow longer, and avoid the walls.">
+<meta name="twitter:image" content="https://devinleetech.com/images/social/games-snake.jpg">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#070b14">
+<!-- SEO:END -->
+</head>
+<body>
+  <main class="game">
+    <div class="panel">
+      <!-- Back link + sound toggle. "../../games.html" goes up two folders to the site's Games page. -->
+      <nav class="topbar">
+        <a class="btn" href="../../games.html">&larr; Games</a>
+        <button id="sound-button" class="btn" type="button" aria-pressed="true">SOUND: ON</button>
+      </nav>
+
+      <!-- Score bar. The numbers are filled in by game.js -->
+      <div class="hud">
+        <div>SCORE <span id="score">0000</span></div>
+        <div>BEST <span id="high-score">0000</span></div>
+      </div>
+    </div>
+
+    <div class="board-wrap">
+      <!-- Snake and food <div>s are added here by the JavaScript -->
+      <div id="game-board" role="img" aria-label="Snake game board"></div>
+
+      <!-- Gold flash + banner shown briefly when the player beats their high score -->
+      <div id="celebration" class="celebration" aria-hidden="true">NEW BEST!</div>
+
+      <!-- Start / game over screen. Text is filled in by game.js -->
+      <div id="overlay" class="overlay" role="status">
+        <h1 id="overlay-title"></h1>
+        <p id="overlay-detail"></p>
+        <p id="overlay-prompt"></p>
+      </div>
+    </div>
+
+    <p class="hint">
+      <span class="hint-keys">Arrow keys / WASD to move</span>
+      <span class="hint-touch">Swipe to move</span>
+    </p>
+  </main>
+</body>
+</html>
